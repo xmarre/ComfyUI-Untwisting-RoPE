@@ -1,0 +1,140 @@
+name: release
+
+on:
+  workflow_run:
+    workflows: [tests]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out tested commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Confirm tested commit is current main
+        id: current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        shell: bash
+        run: |
+          current_main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "${current_main}" == "${RELEASE_SHA}" ]]; then
+            echo "is_current=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "is_current=false" >> "${GITHUB_OUTPUT}"
+            echo "Skipping stale tested commit ${RELEASE_SHA}; current main is ${current_main}."
+          fi
+
+      - name: Read and validate release metadata
+        if: steps.current.outputs.is_current == 'true'
+        id: version
+        shell: bash
+        run: |
+          version="$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid project version: ${version}" >&2
+            exit 1
+          fi
+
+          python - "${version}" <<'PY'
+          import pathlib
+          import sys
+
+          version = sys.argv[1]
+          notes = pathlib.Path("RELEASE_NOTES.md").read_text(encoding="utf-8")
+          heading = next((line.strip() for line in notes.splitlines() if line.strip()), "")
+          if f"v{version}" not in heading:
+              raise SystemExit(
+                  f"RELEASE_NOTES.md first heading must identify v{version}; got {heading!r}"
+              )
+          PY
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=v${version}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check existing tag and release
+        if: steps.current.outputs.is_current == 'true'
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            tag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq '.sha')"
+            if [[ "${tag_sha}" != "${RELEASE_SHA}" ]]; then
+              echo "Tag ${TAG} already points at ${tag_sha}, not tested commit ${RELEASE_SHA}." >&2
+              exit 1
+            fi
+          fi
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "skip=true" >> "${GITHUB_OUTPUT}"
+            echo "Release ${TAG} already exists at the tested commit; leaving it unchanged."
+          else
+            echo "skip=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Build release archive
+        if: >-
+          steps.current.outputs.is_current == 'true' &&
+          steps.existing.outputs.skip != 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          mkdir -p dist
+          archive="ComfyUI-Flux.2-Untwisting-RoPE-v${VERSION}.zip"
+          git archive \
+            --format=zip \
+            --prefix="ComfyUI-Flux.2-Untwisting-RoPE-v${VERSION}/" \
+            --output="dist/${archive}" \
+            HEAD
+          (cd dist && sha256sum "${archive}" > SHA256SUMS)
+
+      - name: Publish GitHub release
+        if: >-
+          steps.current.outputs.is_current == 'true' &&
+          steps.existing.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          gh release create "${TAG}" \
+            "dist/ComfyUI-Flux.2-Untwisting-RoPE-v${VERSION}.zip" \
+            "dist/SHA256SUMS" \
+            --target "${RELEASE_SHA}" \
+            --title "ComfyUI Untwisting RoPE ${TAG}" \
+            --notes-file RELEASE_NOTES.md
+
+      - name: Dispatch Comfy registry publication
+        if: >-
+          steps.current.outputs.is_current == 'true' &&
+          steps.existing.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: gh workflow run publish.yml --repo "${GITHUB_REPOSITORY}" --ref main -f tag="${TAG}"

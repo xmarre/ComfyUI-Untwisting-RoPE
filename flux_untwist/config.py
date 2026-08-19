@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Tuple
 
 
 _PREFIX = "[Flux2UntwistRoPE]"
+_H3_PREFIX = "[MiniMaxH3UntwistRoPE]"
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,46 @@ class UntwistConfig:
             "end_single_block": int(self.end_single_block),
             "qk_adain_strength": float(self.qk_adain_strength),
             "reference_latents_method": str(self.reference_latents_method),
+            "progress": float(self.progress),
+            "verbose": bool(self.verbose),
+        }
+
+
+@dataclass(frozen=True)
+class MiniMaxH3UntwistConfig:
+    """MiniMax H3 runtime configuration for post-RoPE reference-key modulation."""
+
+    enabled: bool
+    reference_ranges: Tuple[Tuple[int, int], ...]
+    reference_scope: str
+    rope_axis_count: int
+    rope_freqs_per_axis: int
+    high_scale_start: float
+    high_scale_end: float
+    low_scale_start: float
+    low_scale_end: float
+    beta: float
+    start_percent: float
+    end_percent: float
+    scale_temporal_axis: bool
+    progress: float
+    verbose: bool
+
+    def as_transformer_options(self) -> Dict[str, Any]:
+        return {
+            "enabled": bool(self.enabled),
+            "reference_ranges": [list(r) for r in self.reference_ranges],
+            "reference_scope": str(self.reference_scope),
+            "rope_axis_count": int(self.rope_axis_count),
+            "rope_freqs_per_axis": int(self.rope_freqs_per_axis),
+            "high_scale_start": float(self.high_scale_start),
+            "high_scale_end": float(self.high_scale_end),
+            "low_scale_start": float(self.low_scale_start),
+            "low_scale_end": float(self.low_scale_end),
+            "beta": float(self.beta),
+            "start_percent": float(self.start_percent),
+            "end_percent": float(self.end_percent),
+            "scale_temporal_axis": bool(self.scale_temporal_axis),
             "progress": float(self.progress),
             "verbose": bool(self.verbose),
         }

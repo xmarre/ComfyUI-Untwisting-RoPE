@@ -1,0 +1,66 @@
+name: Publish to Comfy registry
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published GitHub release tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: comfy-registry-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish-node:
+    name: Publish Custom Node to registry
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'xmarre' }}
+
+    steps:
+      - name: Validate published release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release tag: ${TAG}" >&2
+            exit 1
+          fi
+
+          is_draft="$(gh release view "${TAG}" --json isDraft --jq '.isDraft')"
+          if [[ "${is_draft}" != "false" ]]; then
+            echo "Release ${TAG} is not published." >&2
+            exit 1
+          fi
+
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG}" --jq '.sha' >/dev/null
+
+      - name: Check out released code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          submodules: true
+          ref: ${{ inputs.tag }}
+
+      - name: Verify package version matches release tag
+        env:
+          TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          version="$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          if [[ "v${version}" != "${TAG}" ]]; then
+            echo "Release tag ${TAG} does not match project version v${version}." >&2
+            exit 1
+          fi
+
+      - name: Publish Custom Node
+        uses: Comfy-Org/publish-node-action@0eb6cd742945443bee7f79eeddd4f732780029a1 # v1
+        with:
+          personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}

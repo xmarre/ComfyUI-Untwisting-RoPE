@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import copy
 import math
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List
 
 import torch
 
@@ -21,7 +20,7 @@ def repeat_to_batch(x: torch.Tensor, batch: int) -> torch.Tensor:
 
 
 def clone_model_options(options: Dict[str, Any]) -> Dict[str, Any]:
-    """Copy only the mutable parts we mutate: transformer_options.patch lists."""
+    """Copy mutable transformer option containers before adding patches."""
     out = dict(options or {})
     transformer_options = dict(out.get("transformer_options", {}) or {})
     patches = transformer_options.get("patches", {}) or {}
@@ -41,13 +40,17 @@ def append_transformer_patch(model: Any, patch_name: str, patch_fn: Any) -> None
     patches.setdefault(patch_name, []).append(patch_fn)
 
 
+def _scalar_timestep_value(timestep: Any) -> float:
+    """Resolve a scalar sampling coordinate from ComfyUI timestep-like input."""
+    if torch.is_tensor(timestep):
+        return float(timestep.detach().float().mean().item())
+    return float(timestep)
+
+
 def sigma_from_timestep(timestep: Any) -> float:
-    """Normalize Comfy/Flux timestep-like values into a sigma-like [0, 1] value."""
+    """Normalize Comfy timestep-like values into a sigma-like [0, 1] value."""
     try:
-        if torch.is_tensor(timestep):
-            value = float(timestep.detach().float().mean().item())
-        else:
-            value = float(timestep)
+        value = _scalar_timestep_value(timestep)
         if not math.isfinite(value):
             return 1.0
         if 0.0 <= value <= 1.0:
@@ -63,8 +66,54 @@ def progress_from_timestep(timestep: Any) -> float:
     return max(0.0, min(1.0, 1.0 - sigma_from_timestep(timestep)))
 
 
-def safe_get_diffusion_model(model_patcher: Any) -> Any:
-    """Find the wrapped Flux diffusion model in common ComfyUI ModelPatcher layouts."""
+def progress_from_schedule_index(timestep: Any, *, sigmas: Any = None) -> float:
+    """Map the current denoiser call to its real sampler-schedule position.
+
+    ComfyUI exposes the complete sampling schedule as
+    ``transformer_options['sample_sigmas']``. K-diffusion-style schedules include
+    a terminal zero that is a solver endpoint rather than a denoiser call, so that
+    endpoint is excluded before converting an index to progress. The first model
+    call maps to 0 and the final model call maps to 1.
+
+    If no usable schedule is available, preserve the legacy scalar normalization
+    path rather than guessing a schedule.
+    """
+    try:
+        if torch.is_tensor(sigmas):
+            schedule = sigmas.detach().float().flatten()
+        elif isinstance(sigmas, (list, tuple)):
+            schedule = torch.tensor(
+                [_scalar_timestep_value(value) for value in sigmas],
+                dtype=torch.float32,
+            )
+        else:
+            schedule = None
+
+        if schedule is not None and schedule.numel() >= 2:
+            if not bool(torch.isfinite(schedule).all().item()):
+                raise ValueError("sampling schedule contains non-finite values")
+
+            # ComfyUI/K-diffusion schedules normally carry one terminal sigma=0
+            # that is never passed to the denoiser. Removing it makes N denoiser
+            # coordinates span indices 0..N-1 and therefore progress 0..1.
+            if schedule.numel() >= 2 and abs(float(schedule[-1].item())) <= 1e-12:
+                schedule = schedule[:-1]
+
+            if schedule.numel() == 1:
+                return 1.0
+            if schedule.numel() >= 2:
+                current = _scalar_timestep_value(timestep)
+                if not math.isfinite(current):
+                    raise ValueError("current sampling coordinate is non-finite")
+                idx = int(torch.argmin((schedule - current).abs()).item())
+                return max(0.0, min(1.0, idx / float(schedule.numel() - 1)))
+    except Exception:
+        pass
+
+    return progress_from_timestep(timestep)
+
+
+def _find_diffusion_model(model_patcher: Any, predicate: Any, error_message: str) -> Any:
     roots: List[Any] = []
     if hasattr(model_patcher, "model"):
         roots.append(model_patcher.model)
@@ -86,7 +135,7 @@ def safe_get_diffusion_model(model_patcher: Any) -> Any:
                     ok = False
                     break
                 obj = getattr(obj, part)
-            if ok and _looks_like_flux(obj):
+            if ok and predicate(obj):
                 return obj
 
     seen = set()
@@ -96,7 +145,7 @@ def safe_get_diffusion_model(model_patcher: Any) -> Any:
         if id(obj) in seen:
             continue
         seen.add(id(obj))
-        if _looks_like_flux(obj):
+        if predicate(obj):
             return obj
         for name in ("model", "inner_model", "diffusion_model", "unet", "wrapped"):
             if hasattr(obj, name):
@@ -104,7 +153,25 @@ def safe_get_diffusion_model(model_patcher: Any) -> Any:
                     stack.append(getattr(obj, name))
                 except Exception:
                     pass
-    raise RuntimeError("Could not locate a Flux-like diffusion model on the supplied MODEL.")
+    raise RuntimeError(error_message)
+
+
+def safe_get_diffusion_model(model_patcher: Any) -> Any:
+    """Find the wrapped Flux diffusion model in common ComfyUI ModelPatcher layouts."""
+    return _find_diffusion_model(
+        model_patcher,
+        _looks_like_flux,
+        "Could not locate a Flux-like diffusion model on the supplied MODEL.",
+    )
+
+
+def safe_get_minimax_h3_model(model_patcher: Any) -> Any:
+    """Find ComfyUI's native MiniMaxH3Model without assuming a fixed wrapper depth."""
+    return _find_diffusion_model(
+        model_patcher,
+        _looks_like_minimax_h3,
+        "Could not locate a native MiniMax H3 diffusion model on the supplied MODEL.",
+    )
 
 
 def _looks_like_flux(obj: Any) -> bool:
@@ -113,6 +180,19 @@ def _looks_like_flux(obj: Any) -> bool:
         and hasattr(obj, "single_blocks")
         and hasattr(obj, "double_blocks")
         and hasattr(obj, "params")
+    )
+
+
+def _looks_like_minimax_h3(obj: Any) -> bool:
+    if type(obj).__name__ == "MiniMaxH3Model":
+        return True
+    return (
+        hasattr(obj, "blocks")
+        and hasattr(obj, "rope")
+        and hasattr(obj, "rope_freqs")
+        and hasattr(obj, "audio_patch_proj")
+        and hasattr(obj, "video_patch_proj")
+        and hasattr(obj, "final_layer")
     )
 
 
