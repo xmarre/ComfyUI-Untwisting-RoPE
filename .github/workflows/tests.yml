@@ -1,0 +1,135 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality-and-unit:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Check out custom node
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install pytest ruff
+          if [[ "${{ matrix.python-version }}" == "3.10" ]]; then python -m pip install tomli; fi
+
+      - name: Validate package metadata
+        shell: bash
+        run: |
+          python - <<'PY'
+          import pathlib
+          import re
+
+          try:
+              import tomllib
+          except ModuleNotFoundError:
+              import tomli as tomllib
+
+          data = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
+          project = data["project"]
+          comfy = data["tool"]["comfy"]
+          version = project["version"]
+
+          if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[-.][0-9A-Za-z.-]+)?", version):
+              raise SystemExit(f"invalid project.version: {version!r}")
+          if comfy.get("PublisherId") != "xmarre":
+              raise SystemExit("tool.comfy.PublisherId must remain 'xmarre'")
+
+          notes = pathlib.Path("RELEASE_NOTES.md").read_text(encoding="utf-8")
+          first_heading = next((line.strip() for line in notes.splitlines() if line.strip()), "")
+          if f"v{version}" not in first_heading:
+              raise SystemExit(
+                  f"RELEASE_NOTES.md first heading must identify v{version}; got {first_heading!r}"
+              )
+          PY
+
+      - name: Run critical Ruff checks
+        run: python -m ruff check nodes.py flux_untwist tests --select E9,F63,F7,F82
+
+      - name: Compile Python sources
+        run: python -m compileall -q __init__.py nodes.py flux_untwist tests
+
+      - name: Run unit tests
+        run: python -m pytest -q
+
+  native-comfy-h3-contract:
+    name: Native ComfyUI H3 contract
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out custom node
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out reviewed ComfyUI source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          repository: comfyanonymous/ComfyUI
+          ref: cc0fc21fea7a6a82f568362b15b7fbd713b419c1
+          path: ComfyUI
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate native MiniMax H3 integration contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          model = (Path("ComfyUI") / "comfy/ldm/minimax/model.py").read_text(encoding="utf-8")
+          model_base = (Path("ComfyUI") / "comfy/model_base.py").read_text(encoding="utf-8")
+
+          model_required = {
+              "MiniMaxH3Model": "class MiniMaxH3Model",
+              "PackedLayout": "class PackedLayout",
+              "native ref_img segment": 'segments.append(("ref_img", n))',
+              "optimized attention hook": "optimized_attention(q, k, v, self.heads",
+              "transformer options forwarding": "transformer_options=transformer_options",
+              "RoPE inverse-frequency buffer": 'self.rope.register_buffer("inv_freq"',
+              "three-axis RoPE frequency construction": "per_axis = pos.unsqueeze(-1) * inv.view(1, 1, -1)",
+          }
+          base_required = {
+              "MiniMaxH3 BaseModel": "class MiniMaxH3(BaseModel)",
+              "native refs payload": 'payload["refs"] = refs',
+              "native layout payload": 'payload["layout"] = comfy.ldm.minimax.model.PackedLayout',
+              "minimax payload condition": "out['minimax_payload'] = comfy.conds.CONDConstant(payload)",
+          }
+
+          missing = [name for name, marker in model_required.items() if marker not in model]
+          missing += [name for name, marker in base_required.items() if marker not in model_base]
+          if missing:
+              raise SystemExit("reviewed ComfyUI H3 contract changed or is missing: " + ", ".join(missing))
+          PY

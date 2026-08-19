@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-flux2-untwisting-rope"
-description = "Frequency-aware RoPE reference-attention modulation for Flux/Flux.2 models in ComfyUI."
-version = "0.1.0"
+description = "Frequency-aware RoPE reference-attention modulation for Flux/Flux.2 and MiniMax H3 in ComfyUI."
+version = "0.2.0"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = []
@@ -13,7 +13,7 @@ Documentation = "https://github.com/xmarre/ComfyUI-Flux.2-Untwisting-RoPE#readme
 
 [tool.comfy]
 PublisherId = "xmarre"
-DisplayName = "ComfyUI Flux2 Untwisting RoPE"
+DisplayName = "ComfyUI Untwisting RoPE (Flux2 + MiniMax H3)"
 Icon = ""
 includes = []
 
