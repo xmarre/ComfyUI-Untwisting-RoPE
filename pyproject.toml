@@ -3,7 +3,7 @@
 # legacy ID even though the GitHub repository/display branding is now generic.
 name = "comfyui-flux2-untwisting-rope"
 description = "Frequency-aware RoPE reference-attention modulation for Flux/Flux.2 and MiniMax H3 in ComfyUI."
-version = "0.2.1"
+version = "0.2.2"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = []

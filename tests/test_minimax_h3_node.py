@@ -38,7 +38,7 @@ def _patch(
     model,
     *,
     high_scale_start=0.95,
-    high_scale_end=1.05,
+    high_scale_end=1.0,
     low_scale_start=1.0,
     low_scale_end=1.05,
     beta=2.0,
@@ -82,7 +82,7 @@ def test_h3_node_ui_defaults_match_tested_runtime_defaults():
     optional = inputs["optional"]
 
     assert required["high_scale_start"][1]["default"] == 0.95
-    assert required["high_scale_end"][1]["default"] == 1.05
+    assert required["high_scale_end"][1]["default"] == 1.00
     assert required["low_scale_start"][1]["default"] == 1.00
     assert required["low_scale_end"][1]["default"] == 1.05
     assert required["beta"][1]["default"] == 2.0
@@ -380,7 +380,7 @@ def test_h3_spectrum_profile_contains_window_scope_and_strength_metadata():
     assert profile["hard_end"] is True
     assert profile["scope"] == "image_and_video"
     assert profile["high_scale_start"] == 0.95
-    assert profile["high_scale_end"] == 1.05
+    assert profile["high_scale_end"] == 1.0
     assert profile["low_scale_start"] == 1.0
     assert profile["low_scale_end"] == 1.05
     assert profile["beta"] == 2.0
