@@ -1,4 +1,4 @@
-# ComfyUI Flux.2 Untwisting RoPE
+# ComfyUI Untwisting RoPE
 
 Frequency-aware RoPE reference-attention modulation for Flux/Flux.2 and native MiniMax H3 in ComfyUI.
 
@@ -212,7 +212,7 @@ Clone into `ComfyUI/custom_nodes` and restart ComfyUI:
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/xmarre/ComfyUI-Flux.2-Untwisting-RoPE
+git clone https://github.com/xmarre/ComfyUI-Untwisting-RoPE
 ```
 
 No dependency beyond a working ComfyUI/PyTorch environment is added by this node.
