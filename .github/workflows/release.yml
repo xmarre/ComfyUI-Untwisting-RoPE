@@ -103,10 +103,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          archive="ComfyUI-Flux.2-Untwisting-RoPE-v${VERSION}.zip"
+          archive="ComfyUI-Untwisting-RoPE-v${VERSION}.zip"
           git archive \
             --format=zip \
-            --prefix="ComfyUI-Flux.2-Untwisting-RoPE-v${VERSION}/" \
+            --prefix="ComfyUI-Untwisting-RoPE-v${VERSION}/" \
             --output="dist/${archive}" \
             HEAD
           (cd dist && sha256sum "${archive}" > SHA256SUMS)
@@ -123,7 +123,7 @@ jobs:
         shell: bash
         run: |
           gh release create "${TAG}" \
-            "dist/ComfyUI-Flux.2-Untwisting-RoPE-v${VERSION}.zip" \
+            "dist/ComfyUI-Untwisting-RoPE-v${VERSION}.zip" \
             "dist/SHA256SUMS" \
             --target "${RELEASE_SHA}" \
             --title "ComfyUI Untwisting RoPE ${TAG}" \

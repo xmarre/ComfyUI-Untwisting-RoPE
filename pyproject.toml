@@ -1,19 +1,21 @@
 [project]
+# Comfy Registry node ID. Immutable after the first published version; keep this
+# legacy ID even though the GitHub repository/display branding is now generic.
 name = "comfyui-flux2-untwisting-rope"
 description = "Frequency-aware RoPE reference-attention modulation for Flux/Flux.2 and MiniMax H3 in ComfyUI."
-version = "0.2.0"
+version = "0.2.1"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = []
 
 [project.urls]
-Repository = "https://github.com/xmarre/ComfyUI-Flux.2-Untwisting-RoPE"
-Documentation = "https://github.com/xmarre/ComfyUI-Flux.2-Untwisting-RoPE#readme"
-"Bug Tracker" = "https://github.com/xmarre/ComfyUI-Flux.2-Untwisting-RoPE/issues"
+Repository = "https://github.com/xmarre/ComfyUI-Untwisting-RoPE"
+Documentation = "https://github.com/xmarre/ComfyUI-Untwisting-RoPE#readme"
+"Bug Tracker" = "https://github.com/xmarre/ComfyUI-Untwisting-RoPE/issues"
 
 [tool.comfy]
 PublisherId = "xmarre"
-DisplayName = "ComfyUI Untwisting RoPE (Flux2 + MiniMax H3)"
+DisplayName = "ComfyUI Untwisting RoPE (Flux/Flux.2 + MiniMax H3)"
 Icon = ""
 includes = []
 
