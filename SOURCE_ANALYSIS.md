@@ -181,7 +181,7 @@ The current H3 release defaults are:
 
 ```text
 high_scale_start    = 0.95
-high_scale_end      = 1.05
+high_scale_end      = 1.00
 low_scale_start     = 1.00
 low_scale_end       = 1.05
 beta                = 2.0
@@ -191,7 +191,7 @@ reference_scope     = image_and_video
 scale_temporal_axis = false
 ```
 
-The high-frequency schedule stays close to native (`0.95 -> 1.05`) while the low-frequency schedule uses a small `1.00 -> 1.05` lift. These are empirical H3 release settings from generation testing, not a paper-derived H3 optimum. `beta=2` follows the paper.
+The high-frequency schedule moves from `0.95 -> 1.00` while the low-frequency schedule uses a small `1.00 -> 1.05` lift. These are empirical H3 release settings from generation testing, not a paper-derived H3 optimum. `beta=2` follows the paper.
 
 ## Spectrum external-patch contract
 

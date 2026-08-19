@@ -87,7 +87,7 @@ Current H3 generation testing uses this restrained release default:
 
 ```text
 high_scale_start    = 0.95
-high_scale_end      = 1.05
+high_scale_end      = 1.00
 low_scale_start     = 1.00
 low_scale_end       = 1.05
 beta                = 2.0

@@ -371,7 +371,7 @@ def _scaled_h3_reference_keys(k: torch.Tensor, cfg: Dict[str, Any]) -> torch.Ten
     if not active:
         return k
 
-    high_scale = lerp(cfg.get("high_scale_start", 0.75), cfg.get("high_scale_end", 0.90), t)
+    high_scale = lerp(cfg.get("high_scale_start", 0.95), cfg.get("high_scale_end", 1.0), t)
     low_scale = lerp(cfg.get("low_scale_start", 1.0), cfg.get("low_scale_end", 1.05), t)
     beta = clamp_float(cfg.get("beta", 2.0), 0.01, 32.0, 2.0)
 

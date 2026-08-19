@@ -343,7 +343,7 @@ class MiniMaxH3UntwistRoPE:
                 "high_scale_end": (
                     "FLOAT",
                     {
-                        "default": 1.05,
+                        "default": 1.00,
                         "min": -4.0,
                         "max": 8.0,
                         "step": 0.01,
@@ -473,7 +473,7 @@ class MiniMaxH3UntwistRoPE:
             )
 
         base_high_start = clamp_float(high_scale_start, -4.0, 8.0, 0.95)
-        base_high_end = clamp_float(high_scale_end, -4.0, 8.0, 1.05)
+        base_high_end = clamp_float(high_scale_end, -4.0, 8.0, 1.0)
         base_low_start = clamp_float(low_scale_start, -4.0, 8.0, 1.0)
         base_low_end = clamp_float(low_scale_end, -4.0, 8.0, 1.05)
         base_beta = clamp_float(beta, 0.01, 32.0, 2.0)

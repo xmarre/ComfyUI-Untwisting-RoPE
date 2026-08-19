@@ -1,33 +1,35 @@
-# ComfyUI Untwisting RoPE v0.2.1
+# ComfyUI Untwisting RoPE v0.2.2
 
-v0.2.1 completes the project-wide rebrand now that Untwisting RoPE supports both Flux/Flux.2 and native MiniMax H3.
+v0.2.2 corrects the MiniMax H3 release defaults so the shipped node matches the tested configuration.
 
-## Generic project branding
+## Correct MiniMax H3 defaults
 
-- GitHub repository branding is now `ComfyUI-Untwisting-RoPE` rather than the old Flux.2-specific name.
-- The README title and installation command use the generic project name.
-- Project URLs in `pyproject.toml` point to the generic repository name.
-- GitHub release archives are now named `ComfyUI-Untwisting-RoPE-v<version>.zip` and use the same generic root directory inside the archive.
-- The Comfy Registry display name explicitly lists Flux/Flux.2 and MiniMax H3 support.
-
-## Registry identity compatibility
-
-The existing `[project].name = "comfyui-flux2-untwisting-rope"` value is intentionally retained. Comfy Registry defines the project name as the immutable node ID after first publication, so changing it would create/break registry identity instead of performing a display rename. Repository URLs and `DisplayName` carry the new generic branding while preserving updates for existing installations.
-
-## Runtime behavior
-
-There are no model/runtime behavior changes in v0.2.1. The MiniMax H3 defaults introduced in v0.2.0 remain:
+The exact H3 defaults are now:
 
 ```text
 high_scale_start    = 0.95
-high_scale_end      = 1.05
+high_scale_end      = 1.00
 low_scale_start     = 1.00
 low_scale_end       = 1.05
 beta                = 2.0
 start_percent       = 0.0
 end_percent         = 0.90
+verbose             = false
 reference_scope     = image_and_video
 scale_temporal_axis = false
 ```
 
-Flux/Flux.2 behavior is unchanged.
+The previous release incorrectly shipped `high_scale_end = 1.05`. This release corrects that value to `1.00` everywhere it can affect or describe the H3 default contract:
+
+- ComfyUI node UI default;
+- H3 input sanitization fallback;
+- attention-helper fallback values when a runtime configuration omits scale keys;
+- Spectrum profile regression expectations;
+- README and source-analysis documentation;
+- explicit regression coverage for the complete release-default set and fallback schedule endpoints.
+
+Flux/Flux.2 behavior and defaults are unchanged.
+
+## Project branding
+
+The generic `ComfyUI-Untwisting-RoPE` repository/display branding introduced in v0.2.1 is retained. The legacy `[project].name = "comfyui-flux2-untwisting-rope"` value remains intentionally unchanged because it is the existing Comfy Registry node ID.
