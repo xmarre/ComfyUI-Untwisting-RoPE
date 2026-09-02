@@ -216,6 +216,7 @@ The static profile includes:
 - `beta`;
 - temporal-axis mode;
 - scalar strength summary = largest absolute endpoint distance from `1.0`.
+- v2 terminal-PECE eligibility capability.
 
 Per-call runtime metadata includes actual schedule progress and the call-local active flag.
 
@@ -227,7 +228,7 @@ With Diff-Aid and Untwist stacked, the recognized runtime kinds become:
 text_activation_modulation,visual_reference_attention_modulation
 ```
 
-The default Untwist `end_percent=0.90` boundary is hard because the configured end scales are non-neutral. Spectrum can therefore promote the first crossing forecast call to an actual call.
+The default Untwist `end_percent=0.90` boundary is hard because the configured end scales are non-neutral. The boundary is schedule semantics rather than protection from a sigma-zero singularity, so changing it to `1.0` would be a model-behavior change. Visual-profile schema v2 preserves the boundary and declares `terminal_pece_exact_corrector_safe=true` only for weak (`strength <= 0.05`), late (`end_percent >= 0.90`), spatial-only safe-scope profiles. Spectrum remains responsible for proving the terminal same-outer PECE topology and exact corrected phase; every other case retains the actual promotion.
 
 ## Wrapper/override composition and mutation safety
 

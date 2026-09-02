@@ -6,7 +6,7 @@ from typing import Any, Dict, Tuple
 
 VISUAL_PATCH_PROFILES_KEY = "spectrum_h3_visual_reference_patch_profiles"
 VISUAL_PATCH_RUNTIME_KEY = "spectrum_h3_visual_reference_patch_runtime"
-VISUAL_PATCH_SCHEMA_VERSION = 1
+VISUAL_PATCH_SCHEMA_VERSION = 2
 VISUAL_PATCH_PROVIDER = "comfyui-flux2-untwisting-rope"
 VISUAL_PATCH_KIND = "visual_reference_attention_modulation"
 VISUAL_PATCH_ARCHITECTURE = "minimax_h3"
@@ -49,6 +49,33 @@ def _strength_summary(
     )
 
 
+def _terminal_pece_exact_corrector_safe(
+    *,
+    progress_start: float,
+    progress_end: float,
+    hard_start: bool,
+    hard_end: bool,
+    strength: float,
+    scope: str,
+    scale_temporal_axis: bool,
+) -> bool:
+    """Declare only the reviewed weak, late, spatial hard-end profile.
+
+    Spectrum still has to prove the terminal PECE topology at runtime. This
+    producer capability only states that deferring this profile's terminal
+    boundary to that exact same-outer corrector is an eligible experiment.
+    """
+    return bool(
+        progress_start == 0.0
+        and 0.90 <= progress_end < 1.0
+        and not hard_start
+        and hard_end
+        and strength <= 0.05 + 1e-9
+        and scope in {"image_only", "image_and_video"}
+        and not scale_temporal_axis
+    )
+
+
 def register_spectrum_h3_profile(
     model_options: Dict[str, Any],
     *,
@@ -80,6 +107,11 @@ def register_spectrum_h3_profile(
 
     start_strength = max(abs(high_start - 1.0), abs(low_start - 1.0))
     end_strength = max(abs(high_end - 1.0), abs(low_end - 1.0))
+    strength = _strength_summary(high_start, high_end, low_start, low_end)
+    hard_start = bool(start > 0.0 and start_strength > 0.0)
+    hard_end = bool(end < 1.0 and end_strength > 0.0)
+    scope_value = str(scope)
+    temporal_axis = bool(scale_temporal_axis)
     entries.append(
         {
             "schema_version": VISUAL_PATCH_SCHEMA_VERSION,
@@ -89,18 +121,27 @@ def register_spectrum_h3_profile(
             "instance_id": instance_id,
             "block_indices_0based": list(range(int(block_count))),
             "model_block_count": int(block_count),
-            "strength": _strength_summary(high_start, high_end, low_start, low_end),
+            "strength": strength,
             "progress_start": start,
             "progress_end": end,
-            "hard_start": bool(start > 0.0 and start_strength > 0.0),
-            "hard_end": bool(end < 1.0 and end_strength > 0.0),
-            "scope": str(scope),
+            "hard_start": hard_start,
+            "hard_end": hard_end,
+            "scope": scope_value,
             "high_scale_start": high_start,
             "high_scale_end": high_end,
             "low_scale_start": low_start,
             "low_scale_end": low_end,
             "beta": beta_value,
-            "scale_temporal_axis": bool(scale_temporal_axis),
+            "scale_temporal_axis": temporal_axis,
+            "terminal_pece_exact_corrector_safe": _terminal_pece_exact_corrector_safe(
+                progress_start=start,
+                progress_end=end,
+                hard_start=hard_start,
+                hard_end=hard_end,
+                strength=strength,
+                scope=scope_value,
+                scale_temporal_axis=temporal_axis,
+            ),
         }
     )
     out[VISUAL_PATCH_PROFILES_KEY] = tuple(entries)

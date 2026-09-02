@@ -8,6 +8,7 @@ from flux_untwist.spectrum_h3 import (
     VISUAL_PATCH_KIND,
     VISUAL_PATCH_PROFILES_KEY,
     VISUAL_PATCH_RUNTIME_KEY,
+    VISUAL_PATCH_SCHEMA_VERSION,
 )
 from nodes import MiniMaxH3UntwistRoPE
 
@@ -373,6 +374,7 @@ def test_h3_spectrum_profile_contains_window_scope_and_strength_metadata():
     profiles = patched.model_options[VISUAL_PATCH_PROFILES_KEY]
     assert len(profiles) == 1
     profile = profiles[0]
+    assert profile["schema_version"] == VISUAL_PATCH_SCHEMA_VERSION == 2
     assert profile["kind"] == VISUAL_PATCH_KIND
     assert profile["progress_start"] == 0.0
     assert profile["progress_end"] == 0.90
@@ -385,6 +387,7 @@ def test_h3_spectrum_profile_contains_window_scope_and_strength_metadata():
     assert profile["low_scale_end"] == 1.05
     assert profile["beta"] == 2.0
     assert profile["strength"] == pytest.approx(0.05)
+    assert profile["terminal_pece_exact_corrector_safe"] is True
 
     seen = {}
     patched.model_options["model_function_wrapper"](
@@ -398,7 +401,26 @@ def test_h3_spectrum_profile_contains_window_scope_and_strength_metadata():
     runtime = seen["transformer_options"][VISUAL_PATCH_RUNTIME_KEY]
     assert len(runtime) == 1
     assert runtime[0]["instance_id"] == profile["instance_id"]
+    assert runtime[0]["schema_version"] == profile["schema_version"]
     assert runtime[0]["active"] is True
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"start_percent": 0.10},
+        {"end_percent": 0.89},
+        {"end_percent": 1.0},
+        {"reference_scope": "all_visual_including_continuum"},
+        {"scale_temporal_axis": True},
+        {"high_scale_start": 0.90},
+    ],
+)
+def test_h3_spectrum_terminal_pece_capability_is_narrow(overrides):
+    profile = _patch(FakePatcher(FakeH3()), **overrides).model_options[
+        VISUAL_PATCH_PROFILES_KEY
+    ][0]
+    assert profile["terminal_pece_exact_corrector_safe"] is False
 
 
 def test_h3_patch_clones_model_options_without_mutating_source_state():

@@ -57,6 +57,8 @@ K-diffusion-style schedules include a terminal zero endpoint that is not a denoi
 
 This makes `end_percent=0.90` a real hard cutoff. On a 19-call schedule, calls after 90% progress stay on native H3 attention, including the final call at progress `1.0`.
 
+The cutoff is a user/profile schedule choice, not a numerical singularity in Untwist at sigma zero. For example, `end_percent=0.95` transforms to Spectrum's normalized-sigma window `0.05..1.00`; changing the end to `1.0` would keep the modulation active for the final denoiser call and can change decoded output. The v2 Spectrum contract therefore preserves the configured window instead of widening it for NFE accounting.
+
 #### H3 RoPE geometry
 
 Current native H3 uses:
@@ -111,10 +113,13 @@ The H3 node publishes a namespaced Spectrum runtime profile containing:
 - high/low scale start/end values;
 - `beta` and temporal-axis mode;
 - a scalar strength summary derived from the largest endpoint distance from `1.0`.
+- the required v2 `terminal_pece_exact_corrector_safe` capability flag.
 
 Per-call runtime metadata publishes actual schedule progress and whether Untwist is active for that call. The profile uses separate keys from Diff-Aid so older Spectrum releases simply ignore it rather than rejecting a foreign kind through the Diff-Aid-only schema.
 
-Spectrum support for this profile is implemented in the companion Spectrum PR. With Diff-Aid and Untwist both active, Spectrum can recognize two external patch kinds and force an actual call at Untwist's hard `end_percent` transition.
+The capability is true only for the reviewed weak (`strength <= 0.05`), late (`end_percent >= 0.90`), spatial-only safe-scope profile with a hard end. It does not authorize a forecast by itself: the companion Spectrum implementation must also prove a final same-outer PECE predicted/corrected topology with an exact corrected evaluation. Stronger, temporal-axis, Continuum-reference-inclusive, early, hard-start, full-window, and unknown profiles publish `false` and retain the standard hard-transition anchor.
+
+With Diff-Aid and Untwist both active, Spectrum recognizes both external patch kinds. An unsafe transition on the same logical call wins, so the current strong hard DiffAid boundary remains actual even when the Untwist profile is eligible for the narrow terminal policy.
 
 ## Exact no-op behavior
 
