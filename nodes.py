@@ -32,6 +32,7 @@ try:
         clone_model_options,
         normalize_ref_latents,
         process_latent_for_model,
+        progress_from_h3_flow_sampling_context,
         progress_from_schedule_index,
         progress_from_timestep,
         repeat_to_batch,
@@ -66,6 +67,7 @@ except ImportError:
         clone_model_options,
         normalize_ref_latents,
         process_latent_for_model,
+        progress_from_h3_flow_sampling_context,
         progress_from_schedule_index,
         progress_from_timestep,
         repeat_to_batch,
@@ -520,7 +522,14 @@ class MiniMaxH3UntwistRoPE:
             sample_sigmas = incoming_to.get("sample_sigmas", None)
             if sample_sigmas is None:
                 sample_sigmas = args.get("sigmas", None)
-            progress = progress_from_schedule_index(timestep, sigmas=sample_sigmas)
+            flow_sampling_context = incoming_to.get("h3_flow_sampling_context", None)
+            flow_progress = progress_from_h3_flow_sampling_context(timestep, flow_sampling_context)
+            if flow_progress is None:
+                progress = progress_from_schedule_index(timestep, sigmas=sample_sigmas)
+                progress_source = "local_sample_sigmas"
+            else:
+                progress = flow_progress
+                progress_source = "h3_flow_sampling_context_v1"
             active, _t = schedule_fraction(progress, start_percent, end_percent)
 
             payload = c.get("minimax_payload", None)
@@ -559,7 +568,14 @@ class MiniMaxH3UntwistRoPE:
                 to["optimized_attention_override"] = make_minimax_h3_attention_override(
                     previous_attention_override
                 )
-            to["minimax_h3_untwist_rope"] = cfg.as_transformer_options()
+            runtime_cfg = cfg.as_transformer_options()
+            runtime_cfg["progress_source"] = progress_source
+            if flow_sampling_context is not None:
+                runtime_cfg["flow_stage"] = str(flow_sampling_context["stage"])
+                runtime_cfg["flow_schedule_digest"] = str(flow_sampling_context["original_schedule_digest"])
+                runtime_cfg["flow_stage_start_index"] = int(flow_sampling_context["original_stage_start_index"])
+                runtime_cfg["flow_invocation_generation"] = int(flow_sampling_context["invocation_generation"])
+            to["minimax_h3_untwist_rope"] = runtime_cfg
             c["transformer_options"] = to
 
             if node_verbose:
@@ -570,7 +586,8 @@ class MiniMaxH3UntwistRoPE:
                     f"scope={scope} temporal_axis={temporal_axis} mapping={mapping} "
                     f"native_visual_refs={selection.total_visual_refs} selected={len(ref_ranges)} "
                     f"selected_kinds={list(selection.selected_kinds)} skipped_scope={selection.skipped_video_refs} "
-                    f"skipped_continuum={selection.skipped_continuum_refs} ref_tokens={ref_tokens} ranges={ref_ranges}"
+                    f"skipped_continuum={selection.skipped_continuum_refs} ref_tokens={ref_tokens} ranges={ref_ranges} "
+                    f"progress_source={progress_source}"
                 )
 
             next_args = dict(args)

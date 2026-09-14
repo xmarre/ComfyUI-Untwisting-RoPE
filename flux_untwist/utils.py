@@ -113,6 +113,80 @@ def progress_from_schedule_index(timestep: Any, *, sigmas: Any = None) -> float:
     return progress_from_timestep(timestep)
 
 
+_H3_FLOW_SAMPLING_CONTEXT_KEY = "h3_flow_sampling_context"
+
+
+def progress_from_h3_flow_sampling_context(timestep: Any, context: Any) -> float | None:
+    """Resolve H3 Untwist progress from Flow's diagnostic full-trajectory contract.
+
+    The contract is opt-in and does not replace ComfyUI's sampler-owned
+    ``sample_sigmas``.  When absent, callers must retain the legacy local
+    schedule behavior.  A recognized but malformed contract fails closed.
+    """
+    if context is None:
+        return None
+    if not isinstance(context, dict):
+        raise RuntimeError("h3_flow_sampling_context must be a dictionary")
+    if context.get("api") != 1:
+        raise RuntimeError("unsupported h3_flow_sampling_context API")
+    if context.get("source") != "h3_flow_execution_contract_untwist_clock_trial":
+        raise RuntimeError("unsupported h3_flow_sampling_context source")
+    if context.get("units") != "comfy_sigma":
+        raise RuntimeError("h3_flow_sampling_context must use comfy_sigma units")
+
+    stage = str(context.get("stage", ""))
+    if stage not in {"low", "probe", "high"}:
+        raise RuntimeError("h3_flow_sampling_context has an invalid Flow stage")
+    digest = context.get("original_schedule_digest")
+    if not isinstance(digest, str) or len(digest) != 16:
+        raise RuntimeError("h3_flow_sampling_context has an invalid original schedule digest")
+    generation = context.get("invocation_generation")
+    if not isinstance(generation, int) or generation <= 0:
+        raise RuntimeError("h3_flow_sampling_context has an invalid invocation generation")
+
+    raw_sigmas = context.get("original_nonzero_sigmas")
+    try:
+        if torch.is_tensor(raw_sigmas):
+            schedule = raw_sigmas.detach().to(device="cpu", dtype=torch.float64).flatten()
+        elif isinstance(raw_sigmas, (list, tuple)):
+            schedule = torch.tensor([float(value) for value in raw_sigmas], dtype=torch.float64)
+        else:
+            raise TypeError
+    except Exception as exc:
+        raise RuntimeError("h3_flow_sampling_context has an invalid original sigma schedule") from exc
+    if schedule.numel() < 2 or not bool(torch.isfinite(schedule).all().item()):
+        raise RuntimeError("h3_flow_sampling_context requires at least two finite denoiser coordinates")
+    if bool(torch.any(schedule <= 0).item()):
+        raise RuntimeError("h3_flow_sampling_context original denoiser coordinates must be positive")
+    if bool(torch.any(schedule[:-1] <= schedule[1:]).item()):
+        raise RuntimeError("h3_flow_sampling_context original denoiser coordinates must be strictly descending")
+
+    start_index = context.get("original_stage_start_index")
+    if not isinstance(start_index, int) or not 0 <= start_index < int(schedule.numel()):
+        raise RuntimeError("h3_flow_sampling_context has an invalid stage start index")
+    if stage == "low" and start_index != 0:
+        raise RuntimeError("h3_flow_sampling_context low stage must start at original index zero")
+
+    current = _scalar_timestep_value(timestep)
+    if not math.isfinite(current):
+        raise RuntimeError("h3_flow_sampling_context current coordinate is non-finite")
+    deltas = (schedule - current).abs()
+    index = int(torch.argmin(deltas).item())
+    delta = float(deltas[index].item())
+    tolerance = max(1e-7, abs(current) * 1e-6)
+    if delta > tolerance:
+        raise RuntimeError(
+            "h3_flow_sampling_context current coordinate is not on the original trajectory: "
+            f"coordinate={current:.9g} nearest={float(schedule[index].item()):.9g} delta={delta:.3g}"
+        )
+    if index < start_index:
+        raise RuntimeError("h3_flow_sampling_context current coordinate precedes the declared stage start")
+    if stage == "probe" and index != start_index:
+        raise RuntimeError("h3_flow_sampling_context probe must remain at its original handoff coordinate")
+
+    return max(0.0, min(1.0, index / float(schedule.numel() - 1)))
+
+
 def _find_diffusion_model(model_patcher: Any, predicate: Any, error_message: str) -> Any:
     roots: List[Any] = []
     if hasattr(model_patcher, "model"):
