@@ -1,6 +1,6 @@
 # ComfyUI Untwisting RoPE
 
-Frequency-aware RoPE reference-attention modulation for Flux/Flux.2 and native MiniMax H3 in ComfyUI.
+Frequency-aware RoPE reference-attention modulation for Flux/Flux.2 and MiniMax H3 in ComfyUI.
 
 This package implements the reference-key frequency intervention from:
 
@@ -33,7 +33,7 @@ end_percent      = 1.0
 
 ### MiniMax H3 Untwist RoPE
 
-The H3 node uses ComfyUI's native MiniMax H3 ref2va path. It does not encode or append a second reference representation.
+The H3 node uses ComfyUI's MiniMax H3 ref2va path. It does not encode or append a second reference representation.
 
 Native H3 packs text, references, target audio and target video into one sequence. `PackedLayout.segments` labels the visual rows of **image**, **video**, and **video+audio** references as `ref_img`, so `ref_img` alone does not identify the source reference kind.
 
@@ -83,6 +83,25 @@ The unrotated tail always remains `1.0`.
 
 The paper analyzes spatial reference behavior. For MiniMax H3, keeping the `t` rotary bank native and applying the frequency schedule only to `h` and `w` is an architecture/runtime design choice. `scale_temporal_axis=true` is the explicit experimental opt-in for t/h/w scaling.
 
+#### Canonical Keyless H3 semantics
+
+`h3_keyless_core50_v1` has no physical K projection in its 50 core blocks. Untwist therefore does **not** synthesize a K/QKV compatibility path for that architecture.
+
+When the exact public `minimax_h3_keyless_contract_v1` is present, the node validates the Keyless topology and appends a callable to `minimax_h3_keyless_routing_preprocessors_v1`. Keyless itself first derives the logical route from projected V using route RMSNorm plus the native split-half RoPE, then runs the Untwist preprocessor on that already-positioned route. Only the selected visual-reference rows are frequency-scaled. The raw projected V used for value retrieval is a separate tensor path and is never passed to, cloned by, or modified by Untwist.
+
+This distinction is required for Keyless semantics:
+
+```text
+native H3:   Q @ Kᵀ  -> retrieve V
+Keyless H3:  Q @ route(V)ᵀ -> retrieve raw V
+                           ^
+                           Untwist acts here only
+```
+
+Existing Keyless routing preprocessors retain their order and existing `optimized_attention_override` ownership is left intact. The current Keyless routing-preprocessor ABI receives a route tensor but not its row-domain mapping, so Untwist fails closed if an explicit Keyless value/routing-position domain is already active. A provider that internally materializes a selected/reordered subdomain is also rejected by an exact full-packed-row-count check. This avoids applying absolute H3 reference ranges to the wrong local rows. Domain-aware sparse/fused Untwist transport is a later provider contract, not approximated here.
+
+Mixed Stage-B progressive QV/QKV snapshots do not advertise the canonical all-core Keyless contract. They intentionally retain the existing logical optimized-attention path: accepted QV blocks present `route(V)` as the attention key argument while later native blocks present native K, so the same reviewed post-RoPE transform remains meaningful across that mixed topology.
+
 #### H3 starting settings
 
 Current H3 generation testing uses this restrained release default:
@@ -123,9 +142,9 @@ With Diff-Aid and Untwist both active, Spectrum recognizes both external patch k
 
 ## Exact no-op behavior
 
-For H3, setting all four scale endpoints to `1.0` returns an exact model-patch no-op. The node does not install its model wrapper, optimized-attention override, or Spectrum profile.
+For H3, setting all four scale endpoints to `1.0` returns an exact model-patch no-op. The node does not install its model wrapper, optimized-attention override, Keyless routing preprocessor, or Spectrum profile.
 
-When the configured schedule is non-neutral and a specific model call has no selected refs, an inactive denoising window, or an ambiguous native-ref/segment mapping, the per-call optimized-attention override is not installed. The native attention path remains in control.
+When the configured schedule is non-neutral and a specific model call has no selected refs, an inactive denoising window, or an ambiguous native-ref/segment mapping, neither the native call-time optimized-attention override nor the Keyless routing preprocessor is installed. The underlying attention path remains in control.
 
 ## H3 workflow placement
 
@@ -161,7 +180,7 @@ A neutral control with all scales `1.0` is the first diagnostic if a new artifac
 
 - Flux reference ranges come from `img_slice` and `reference_image_num_tokens`.
 - Pair-wise scaling is applied through the native Flux attention patch path.
-- Existing Flux behavior is intentionally unchanged in v0.2.0.
+- Existing Flux behavior is intentionally unchanged.
 
 ### MiniMax H3
 
@@ -172,10 +191,13 @@ A neutral control with all scales `1.0` is the first diagnostic if a new artifac
 - `image_and_video` selects only `image` + pure `video`;
 - `video_audio` requires `all_visual_including_continuum`;
 - Continuum context requesting native RoPE is excluded under the safe scopes;
-- only selected K rows are cloned/scaled;
-- Q, V, text, guides/keyframes, target audio/video and `ref_audio` are unchanged;
-- scaling happens after H3's fused RMSNorm + split-half RoPE and before attention via `optimized_attention_override`;
-- the call-time `optimized_attention_override` is composed when present, with the patch-time override used only as a fallback;
+- QKV/native and mixed-progressive paths clone/scale only selected logical K rows;
+- canonical Keyless core50 validates `minimax_h3_keyless_contract_v1` and scales only selected logical routing rows through `minimax_h3_keyless_routing_preprocessors_v1`;
+- canonical Keyless raw retrieval V, Q, text, guides/keyframes, target audio/video and `ref_audio` are unchanged by Untwist;
+- native/mixed scaling happens after H3's fused RMSNorm + split-half RoPE and before attention via `optimized_attention_override`;
+- canonical Keyless scaling happens after route RMSNorm + split-half RoPE and before attention through the routing-only preprocessor chain;
+- call-time native `optimized_attention_override` is composed when present, with the patch-time override used only as a fallback;
+- canonical Keyless leaves call-time/patch-time attention ownership unchanged and appends to the routing-preprocessor chain instead;
 - H3 `patches_replace["dit"]` remains unclaimed.
 
 ## Validation
@@ -193,23 +215,32 @@ The unit suite covers:
 - Continuum carry-over exclusion and explicit opt-in;
 - fail-closed behavior when refs and packed ranges do not reconcile;
 - no-reference native-attention no-op behavior;
-- reference-only K scaling;
+- reference-only native K scaling;
 - exact all-ones no-op;
-- Q/V/input-K preservation;
+- native Q/V/input-K preservation;
 - call-time optimized-attention override composition;
 - model-wrapper composition;
 - cloned-model-options isolation;
-- Spectrum static/runtime profile emission.
+- Spectrum static/runtime profile emission;
+- exact Keyless v1 contract/topology validation and fake-QKV rejection;
+- Keyless logical-route-only reference scaling with raw retrieval V unchanged;
+- existing Keyless routing-preprocessor order and attention-owner preservation;
+- fail-closed explicit/selected Keyless row-domain behavior;
+- inactive Keyless calls installing no Untwist route transform.
 
 CI also checks the pinned native ComfyUI H3 contract, including preservation of the `minimax_payload["refs"]` list required for safe ref-to-row pairing.
 
+These structural tests prove routing ownership, tensor-path separation and fail-closed composition. They do **not** establish decoded MiniMax-H3 or Keyless-H3 visual/audio parity; that remains an empirical generation gate.
+
 ## Compatibility and risks
 
-- MiniMax H3 support targets ComfyUI's native H3 implementation and its current three-axis split-half RoPE geometry.
+- MiniMax H3 support targets ComfyUI's current native H3 implementation and its current three-axis split-half RoPE geometry.
+- Canonical `h3_keyless_core50_v1` is supported through its public routing-only preprocessor contract; no physical/fake K is created.
+- Keyless explicit value/routing-position subdomains are intentionally unsupported until a domain-aware preprocessor/provider transport exists.
 - Ordinary native pure-video Untwisting is supported by default; H3-specific video quality still requires empirical tuning.
 - Mixed `video_audio` and Continuum carry-over Untwisting are advanced opt-ins.
 - Temporal-axis Untwisting remains experimental and disabled by default.
-- Active `optimized_attention_override` calls can materialize `AttentionTensorContainer` inputs before the custom override. Backends with specialized container fast paths may have a performance difference on active calls.
+- Active native/mixed `optimized_attention_override` calls can materialize `AttentionTensorContainer` inputs before the custom override. Backends with specialized container fast paths may have a performance difference on active calls. Canonical Keyless routing preprocessing avoids claiming that attention-override owner.
 
 ## Installation
 

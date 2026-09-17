@@ -18,6 +18,13 @@ try:
         safe_axes_dim,
         schedule_fraction,
     )
+    from .flux_untwist.keyless_h3 import (
+        KEYLESS_ROUTING_PREPROCESSORS_KEY,
+        append_keyless_routing_preprocessor,
+        make_keyless_untwist_routing_preprocessor,
+        minimax_h3_payload_row_count,
+        validate_keyless_h3_contract,
+    )
     from .flux_untwist.patches import (
         flux_untwist_attn1_patch,
         make_minimax_h3_attention_override,
@@ -51,6 +58,13 @@ except ImportError:
         normalize_reference_method,
         safe_axes_dim,
         schedule_fraction,
+    )
+    from flux_untwist.keyless_h3 import (
+        KEYLESS_ROUTING_PREPROCESSORS_KEY,
+        append_keyless_routing_preprocessor,
+        make_keyless_untwist_routing_preprocessor,
+        minimax_h3_payload_row_count,
+        validate_keyless_h3_contract,
     )
     from flux_untwist.patches import (
         flux_untwist_attn1_patch,
@@ -314,14 +328,15 @@ class Flux2UntwistRoPE:
 
 
 class MiniMaxH3UntwistRoPE:
-    """Patch native MiniMax H3 visual-reference attention after split-half RoPE."""
+    """Patch MiniMax H3 visual-reference routing after split-half RoPE."""
 
     CATEGORY = "model_patches/Untwisting RoPE"
     RETURN_TYPES = ("MODEL",)
     RETURN_NAMES = ("model",)
     FUNCTION = "patch"
     DESCRIPTION = (
-        "Applies frequency-aware RoPE scaling to selected native MiniMax H3 visual-reference keys. "
+        "Applies frequency-aware RoPE scaling to selected MiniMax H3 visual-reference routing. "
+        "Native QKV H3 scales reference K; canonical Keyless H3 scales only the logical route while raw retrieval V remains unchanged. "
         "Ordinary image and pure-video refs are targeted by default; video+audio and H3 Continuum context require explicit opt-in."
     )
 
@@ -337,7 +352,7 @@ class MiniMaxH3UntwistRoPE:
                         "min": -4.0,
                         "max": 8.0,
                         "step": 0.01,
-                        "tooltip": "Highest-frequency H3 reference-key scale at the start of the active window.",
+                        "tooltip": "Highest-frequency H3 reference-key/route scale at the start of the active window.",
                     },
                 ),
                 "high_scale_end": (
@@ -347,7 +362,7 @@ class MiniMaxH3UntwistRoPE:
                         "min": -4.0,
                         "max": 8.0,
                         "step": 0.01,
-                        "tooltip": "Highest-frequency H3 reference-key scale at the end of the active window.",
+                        "tooltip": "Highest-frequency H3 reference-key/route scale at the end of the active window.",
                     },
                 ),
                 "low_scale_start": (
@@ -357,7 +372,7 @@ class MiniMaxH3UntwistRoPE:
                         "min": -4.0,
                         "max": 8.0,
                         "step": 0.01,
-                        "tooltip": "Lowest-frequency H3 reference-key scale at the start of the active window.",
+                        "tooltip": "Lowest-frequency H3 reference-key/route scale at the start of the active window.",
                     },
                 ),
                 "low_scale_end": (
@@ -367,7 +382,7 @@ class MiniMaxH3UntwistRoPE:
                         "min": -4.0,
                         "max": 8.0,
                         "step": 0.01,
-                        "tooltip": "Lowest-frequency H3 reference-key scale at the end of the active window.",
+                        "tooltip": "Lowest-frequency H3 reference-key/route scale at the end of the active window.",
                     },
                 ),
                 "beta": (
@@ -449,10 +464,11 @@ class MiniMaxH3UntwistRoPE:
 
         model_clone = model.clone()
         dm = safe_get_minimax_h3_model(model_clone)
+        keyless_contract = validate_keyless_h3_contract(dm)
 
         blocks = getattr(dm, "blocks", None)
         if blocks is None or len(blocks) == 0:
-            raise RuntimeError("MiniMax H3 Untwist RoPE requires a native H3 DiT with at least one transformer block.")
+            raise RuntimeError("MiniMax H3 Untwist RoPE requires an H3 DiT with at least one transformer block.")
         first_attn = getattr(blocks[0], "attn", None)
         head_dim = int(getattr(first_attn, "head_dim", 0) or 0)
         if head_dim <= 0:
@@ -507,6 +523,10 @@ class MiniMaxH3UntwistRoPE:
         )
         base_transformer_options = model_clone.model_options.setdefault("transformer_options", {})
         patch_time_attention_override = base_transformer_options.get("optimized_attention_override", None)
+        patch_time_keyless_preprocessors = base_transformer_options.get(
+            KEYLESS_ROUTING_PREPROCESSORS_KEY,
+            None,
+        )
 
         def model_function_wrapper(apply_model, args: Dict[str, Any]):
             input_x = args["input"]
@@ -544,6 +564,7 @@ class MiniMaxH3UntwistRoPE:
                 progress=progress,
                 verbose=node_verbose,
             )
+            cfg_options = cfg.as_transformer_options()
 
             to = append_spectrum_h3_runtime(
                 incoming_to,
@@ -552,22 +573,48 @@ class MiniMaxH3UntwistRoPE:
                 active=cfg.enabled,
             )
             if cfg.enabled:
-                previous_attention_override = to.get(
-                    "optimized_attention_override",
-                    patch_time_attention_override,
-                )
-                to["optimized_attention_override"] = make_minimax_h3_attention_override(
-                    previous_attention_override
-                )
-            to["minimax_h3_untwist_rope"] = cfg.as_transformer_options()
+                if keyless_contract is not None:
+                    # Canonical Keyless H3 has no physical K. Preserve any existing
+                    # attention owner exactly and append Untwist only to the public
+                    # routing transform chain. Retrieval V is never passed to this
+                    # preprocessor. A mixed progressive QV/QKV snapshot does not
+                    # advertise the all-core Keyless contract and intentionally stays
+                    # on the logical optimized-attention path below.
+                    if (
+                        KEYLESS_ROUTING_PREPROCESSORS_KEY not in to
+                        and patch_time_keyless_preprocessors is not None
+                    ):
+                        to[KEYLESS_ROUTING_PREPROCESSORS_KEY] = patch_time_keyless_preprocessors
+                    if (
+                        "optimized_attention_override" not in to
+                        and patch_time_attention_override is not None
+                    ):
+                        to["optimized_attention_override"] = patch_time_attention_override
+                    expected_rows = minimax_h3_payload_row_count(payload)
+                    preprocessor = make_keyless_untwist_routing_preprocessor(
+                        cfg_options,
+                        instance_id=spectrum_instance_id,
+                        expected_rows=expected_rows,
+                    )
+                    to = append_keyless_routing_preprocessor(to, preprocessor)
+                else:
+                    previous_attention_override = to.get(
+                        "optimized_attention_override",
+                        patch_time_attention_override,
+                    )
+                    to["optimized_attention_override"] = make_minimax_h3_attention_override(
+                        previous_attention_override
+                    )
+            to["minimax_h3_untwist_rope"] = cfg_options
             c["transformer_options"] = to
 
             if node_verbose:
                 ref_tokens = sum(end - start for start, end in ref_ranges)
                 mapping = "ok" if selection.mapping_valid else f"invalid:{selection.reason}"
+                route = "keyless_route" if keyless_contract is not None else "logical_k"
                 print(
                     f"{_H3_PREFIX} call: progress={progress:.3f} active={active} enabled={cfg.enabled} "
-                    f"scope={scope} temporal_axis={temporal_axis} mapping={mapping} "
+                    f"route={route} scope={scope} temporal_axis={temporal_axis} mapping={mapping} "
                     f"native_visual_refs={selection.total_visual_refs} selected={len(ref_ranges)} "
                     f"selected_kinds={list(selection.selected_kinds)} skipped_scope={selection.skipped_video_refs} "
                     f"skipped_continuum={selection.skipped_continuum_refs} ref_tokens={ref_tokens} ranges={ref_ranges}"
@@ -582,7 +629,8 @@ class MiniMaxH3UntwistRoPE:
         model_clone.set_model_unet_function_wrapper(model_function_wrapper)
 
         if node_verbose:
-            print(f"{_H3_PREFIX} patched native H3 model: {type(dm).__name__}")
+            architecture = "keyless_core50" if keyless_contract is not None else "native_or_mixed_qkv"
+            print(f"{_H3_PREFIX} patched H3 model: {type(dm).__name__} architecture={architecture}")
             print(
                 f"{_H3_PREFIX} blocks={len(blocks)} head_dim={head_dim} "
                 f"rotary_axes={rope_axis_count} freqs_per_axis={rope_freqs_per_axis} "
