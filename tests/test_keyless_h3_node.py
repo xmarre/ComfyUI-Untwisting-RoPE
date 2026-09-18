@@ -156,7 +156,7 @@ def test_keyless_node_appends_routing_preprocessor_without_replacing_attention_o
     untwist = preprocessors[1]
     assert callable(untwist)
     assert isinstance(untwist.identity, str)
-    assert untwist.identity.startswith("minimax_h3_untwist_keyless_route_v1:")
+    assert untwist.identity.startswith("minimax_h3_untwist_keyless_route_v2:")
 
     route = torch.ones((12, 2, 128))
     raw_v = torch.randn_like(route)
@@ -186,13 +186,23 @@ def test_keyless_node_preserves_call_time_attention_owner_over_patch_time_owner(
     assert KEYLESS_ROUTING_PREPROCESSORS_KEY in options
 
 
-def test_keyless_node_rejects_explicit_value_domain_before_model_execution() -> None:
+def test_keyless_node_preserves_explicit_domains_for_domain_aware_execution() -> None:
     patched = _patch(FakePatcher(FakeKeylessH3()))
-    with pytest.raises(RuntimeError, match="does not yet support explicit row domains"):
-        _invoke(
-            patched,
-            transformer_options={"minimax_h3_keyless_value_domain_v1": slice(0, 8)},
-        )
+    value_domain = slice(0, 8)
+    routing_domain = SimpleNamespace(indices=tuple(range(8)), start=None, stop=None)
+
+    options = _invoke(
+        patched,
+        transformer_options={
+            "minimax_h3_keyless_value_domain_v1": value_domain,
+            "minimax_h3_keyless_routing_position_domain_v1": routing_domain,
+        },
+    )
+
+    assert options["minimax_h3_keyless_value_domain_v1"] is value_domain
+    assert options["minimax_h3_keyless_routing_position_domain_v1"] is routing_domain
+    preprocessor = options[KEYLESS_ROUTING_PREPROCESSORS_KEY][-1]
+    assert callable(preprocessor.apply_domain)
 
 
 def test_keyless_node_fails_closed_on_malformed_advertised_contract() -> None:
