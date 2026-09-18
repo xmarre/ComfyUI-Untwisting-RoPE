@@ -315,11 +315,16 @@ def _domain_positions(
     stop = getattr(domain, "stop", None)
     if indices is not None:
         try:
-            positions = tuple(int(value) for value in indices)
-        except (TypeError, ValueError) as exc:
+            raw_positions = tuple(indices)
+        except TypeError as exc:
+            raise RuntimeError(
+                f"Keyless Untwist {label} domain indices must be iterable"
+            ) from exc
+        if any(type(value) is not int for value in raw_positions):
             raise RuntimeError(
                 f"Keyless Untwist {label} domain indices must be integers"
-            ) from exc
+            )
+        positions = raw_positions
         if len(positions) != local_rows:
             raise RuntimeError(
                 f"Keyless Untwist {label} domain has {len(positions)} coordinates "
@@ -370,14 +375,33 @@ def _apply_keyless_untwist_route(
         label="routing-position",
     )
     if value_domain is not None:
-        # Retrieval coordinates are not used for Untwist selection, but their
-        # topology must remain 1:1 with the route rows selected from V.
-        _domain_positions(
-            value_domain,
-            local_rows=local_rows,
-            expected_rows=snapshot.expected_rows,
-            label="value",
-        )
+        # Retrieval coordinates are not Untwist's reference-selection coordinate
+        # system. Validate only an explicit local cardinality when one is available.
+        value_indices = getattr(value_domain, "indices", None)
+        value_start = getattr(value_domain, "start", None)
+        value_stop = getattr(value_domain, "stop", None)
+        if value_indices is not None:
+            try:
+                value_indices = tuple(value_indices)
+            except TypeError as exc:
+                raise RuntimeError(
+                    "Keyless Untwist value-domain indices must be iterable"
+                ) from exc
+            if len(value_indices) != local_rows:
+                raise RuntimeError(
+                    f"Keyless Untwist value domain has {len(value_indices)} coordinates "
+                    f"for {local_rows} local rows"
+                )
+        elif value_start is not None or value_stop is not None:
+            if type(value_start) is not int or type(value_stop) is not int:
+                raise RuntimeError(
+                    "Keyless Untwist value slice domain requires integer start/stop"
+                )
+            if value_stop < value_start or value_stop - value_start != local_rows:
+                raise RuntimeError(
+                    f"Keyless Untwist value slice [{value_start},{value_stop}) does not "
+                    f"match {local_rows} local rows"
+                )
 
     head_dim = int(route.shape[-1])
     rotated_dim = 2 * snapshot.rope_axis_count * snapshot.rope_freqs_per_axis
@@ -410,15 +434,17 @@ def _apply_keyless_untwist_route(
         scale_temporal_axis=snapshot.scale_temporal_axis,
     ).view(1, 1, head_dim)
 
-    selected = torch.zeros(local_rows, dtype=torch.bool, device=route.device)
-    coordinate_tensor = torch.tensor(positions, dtype=torch.long, device=route.device)
-    for start, end in snapshot.reference_ranges:
-        selected |= (coordinate_tensor >= start) & (coordinate_tensor < end)
-    if not bool(selected.any()):
+    selected_rows = tuple(
+        local_index
+        for local_index, position in enumerate(positions)
+        if any(start <= position < end for start, end in snapshot.reference_ranges)
+    )
+    if not selected_rows:
         return route
 
+    selected = torch.tensor(selected_rows, dtype=torch.long, device=route.device)
     out = route.clone()
-    out[selected, :, :] = out[selected, :, :] * scale
+    out[selected, :, :] = out.index_select(0, selected) * scale
     return out
 
 
