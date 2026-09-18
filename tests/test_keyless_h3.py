@@ -150,14 +150,89 @@ def test_keyless_preprocessor_scales_only_logical_route_reference_rows() -> None
     torch.testing.assert_close(retrieval_v, retrieval_before)
 
 
-def test_keyless_preprocessor_fails_if_provider_materializes_selected_value_domain() -> None:
+def test_keyless_preprocessor_maps_selected_reordered_rows_by_routing_positions() -> None:
     preprocessor = make_keyless_untwist_routing_preprocessor(
         _cfg(),
         instance_id="untwist-keyless-test",
         expected_rows=6,
     )
-    with pytest.raises(RuntimeError, match="Selected/reordered Keyless value domains"):
-        preprocessor(torch.ones((4, 2, 8)))
+    route = torch.ones((4, 2, 8), dtype=torch.float32)
+    value_domain = SimpleNamespace(indices=(5, 3, 1, 2), start=None, stop=None)
+    routing_domain = SimpleNamespace(indices=(5, 3, 1, 2), start=None, stop=None)
+
+    out = preprocessor.apply_domain(route, value_domain, routing_domain)
+
+    expected_scale = torch.tensor([0.5, 1.5, 0.5, 1.5, 1.0, 1.0, 1.0, 1.0])
+    torch.testing.assert_close(out[0], route[0])
+    torch.testing.assert_close(
+        out[1],
+        expected_scale.view(1, 8).expand(2, 8),
+    )
+    torch.testing.assert_close(out[2], route[2])
+    torch.testing.assert_close(
+        out[3],
+        expected_scale.view(1, 8).expand(2, 8),
+    )
+    torch.testing.assert_close(route, torch.ones_like(route))
+
+
+def test_keyless_preprocessor_maps_slice_domain_to_original_reference_rows() -> None:
+    preprocessor = make_keyless_untwist_routing_preprocessor(
+        _cfg(reference_ranges=[[3, 5]]),
+        instance_id="untwist-keyless-test",
+        expected_rows=6,
+    )
+    route = torch.ones((3, 2, 8), dtype=torch.float32)
+    routing_domain = SimpleNamespace(indices=None, start=2, stop=5)
+
+    out = preprocessor.apply_domain(route, None, routing_domain)
+
+    expected_scale = torch.tensor([0.5, 1.5, 0.5, 1.5, 1.0, 1.0, 1.0, 1.0])
+    torch.testing.assert_close(out[0], route[0])
+    torch.testing.assert_close(
+        out[1:],
+        expected_scale.view(1, 1, 8).expand(2, 2, 8),
+    )
+
+
+@pytest.mark.parametrize(
+    "routing_domain,match",
+    [
+        (SimpleNamespace(indices=(0, 1), start=None, stop=None), "2 coordinates"),
+        (SimpleNamespace(indices=(0, 6, 1), start=None, stop=None), "outside"),
+        (SimpleNamespace(indices=None, start=1, stop=5), "does not match"),
+        (SimpleNamespace(indices=None, start=None, stop=None), "does not expose row coordinates"),
+    ],
+)
+def test_keyless_preprocessor_rejects_malformed_selected_domains(
+    routing_domain,
+    match: str,
+) -> None:
+    preprocessor = make_keyless_untwist_routing_preprocessor(
+        _cfg(),
+        instance_id="untwist-keyless-test",
+        expected_rows=6,
+    )
+    with pytest.raises(RuntimeError, match=match):
+        preprocessor.apply_domain(
+            torch.ones((3, 2, 8)),
+            None,
+            routing_domain,
+        )
+
+
+def test_keyless_preprocessor_requires_position_domain_for_reduced_rows() -> None:
+    preprocessor = make_keyless_untwist_routing_preprocessor(
+        _cfg(),
+        instance_id="untwist-keyless-test",
+        expected_rows=6,
+    )
+    with pytest.raises(RuntimeError, match="domain is missing after row selection"):
+        preprocessor.apply_domain(
+            torch.ones((4, 2, 8)),
+            SimpleNamespace(indices=(0, 1, 2, 3), start=None, stop=None),
+            None,
+        )
 
 
 def test_keyless_preprocessor_identity_binds_dynamic_route_semantics() -> None:
@@ -175,9 +250,11 @@ def test_keyless_preprocessor_identity_binds_dynamic_route_semantics() -> None:
     )
 
     assert first.identity == same.identity
+    assert first.identity.startswith("minimax_h3_untwist_keyless_route_v2:")
     assert first.identity != changed_progress.identity
     assert first.identity != changed_ranges.identity
     assert first.fn.__func__ is same.fn.__func__
+    assert callable(first.apply_domain)
 
 
 def test_append_preserves_preprocessor_order_and_does_not_claim_attention_override() -> None:
@@ -205,9 +282,15 @@ def test_append_preserves_preprocessor_order_and_does_not_claim_attention_overri
     "domain_key",
     [KEYLESS_VALUE_DOMAIN_KEY, KEYLESS_ROUTING_POSITION_DOMAIN_KEY],
 )
-def test_explicit_keyless_row_domain_fails_before_untwist_is_appended(domain_key: str) -> None:
+def test_explicit_keyless_row_domain_is_preserved_when_untwist_is_appended(
+    domain_key: str,
+) -> None:
     preprocessor = make_keyless_untwist_routing_preprocessor(
         _cfg(), instance_id="instance-a", expected_rows=6
     )
-    with pytest.raises(RuntimeError, match="does not yet support explicit row domains"):
-        append_keyless_routing_preprocessor({domain_key: object()}, preprocessor)
+    domain = object()
+
+    out = append_keyless_routing_preprocessor({domain_key: domain}, preprocessor)
+
+    assert out[domain_key] is domain
+    assert out[KEYLESS_ROUTING_PREPROCESSORS_KEY] == (preprocessor,)
