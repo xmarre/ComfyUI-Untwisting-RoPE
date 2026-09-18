@@ -157,7 +157,9 @@ def test_keyless_preprocessor_maps_selected_reordered_rows_by_routing_positions(
         expected_rows=6,
     )
     route = torch.ones((4, 2, 8), dtype=torch.float32)
-    value_domain = SimpleNamespace(indices=(5, 3, 1, 2), start=None, stop=None)
+    # Value-domain coordinates may belong to a different physical namespace.
+    # Untwist selection is defined by routing-position coordinates, not these values.
+    value_domain = SimpleNamespace(indices=(105, 103, 101, 102), start=None, stop=None)
     routing_domain = SimpleNamespace(indices=(5, 3, 1, 2), start=None, stop=None)
 
     out = preprocessor.apply_domain(route, value_domain, routing_domain)
@@ -200,6 +202,7 @@ def test_keyless_preprocessor_maps_slice_domain_to_original_reference_rows() -> 
     [
         (SimpleNamespace(indices=(0, 1), start=None, stop=None), "2 coordinates"),
         (SimpleNamespace(indices=(0, 6, 1), start=None, stop=None), "outside"),
+        (SimpleNamespace(indices=(0, 1.5, 2), start=None, stop=None), "must be integers"),
         (SimpleNamespace(indices=None, start=1, stop=5), "does not match"),
         (SimpleNamespace(indices=None, start=None, stop=None), "does not expose row coordinates"),
     ],
