@@ -98,7 +98,7 @@ Keyless H3:  Q @ route(V)ᵀ -> retrieve raw V
                            Untwist acts here only
 ```
 
-Existing Keyless routing preprocessors retain their order and existing `optimized_attention_override` ownership is left intact. The current Keyless routing-preprocessor ABI receives a route tensor but not its row-domain mapping, so Untwist fails closed if an explicit Keyless value/routing-position domain is already active. A provider that internally materializes a selected/reordered subdomain is also rejected by an exact full-packed-row-count check. This avoids applying absolute H3 reference ranges to the wrong local rows. Domain-aware sparse/fused Untwist transport is a later provider contract, not approximated here.
+Existing Keyless routing preprocessors retain their order and existing `optimized_attention_override` ownership is left intact. The v2 Keyless Untwist preprocessor also exposes `apply_domain(route, value_domain, routing_position_domain)`. A provider that selects or reorders V before route materialization can therefore carry the authoritative original routing-position coordinates into Untwist; reference ranges are evaluated in those original packed-row coordinates while raw retrieval V remains untouched. Malformed, out-of-range, length-mismatched, or coordinate-free selected domains fail closed instead of applying absolute H3 ranges to guessed local rows.
 
 Mixed Stage-B progressive QV/QKV snapshots do not advertise the canonical all-core Keyless contract. They intentionally retain the existing logical optimized-attention path: accepted QV blocks present `route(V)` as the attention key argument while later native blocks present native K, so the same reviewed post-RoPE transform remains meaningful across that mixed topology.
 
@@ -225,7 +225,7 @@ The unit suite covers:
 - exact Keyless v1 contract/topology validation and fake-QKV rejection;
 - Keyless logical-route-only reference scaling with raw retrieval V unchanged;
 - existing Keyless routing-preprocessor order and attention-owner preservation;
-- fail-closed explicit/selected Keyless row-domain behavior;
+- domain-aware explicit/selected Keyless row mapping plus fail-closed malformed/opaque domains;
 - inactive Keyless calls installing no Untwist route transform.
 
 CI also checks the pinned native ComfyUI H3 contract, including preservation of the `minimax_payload["refs"]` list required for safe ref-to-row pairing.
@@ -236,7 +236,7 @@ These structural tests prove routing ownership, tensor-path separation and fail-
 
 - MiniMax H3 support targets ComfyUI's current native H3 implementation and its current three-axis split-half RoPE geometry.
 - Canonical `h3_keyless_core50_v1` is supported through its public routing-only preprocessor contract; no physical/fake K is created.
-- Keyless explicit value/routing-position subdomains are intentionally unsupported until a domain-aware preprocessor/provider transport exists.
+- Keyless explicit/selected value domains are supported when the provider carries an aligned routing-position domain; opaque or misaligned domains remain fail-closed.
 - Ordinary native pure-video Untwisting is supported by default; H3-specific video quality still requires empirical tuning.
 - Mixed `video_audio` and Continuum carry-over Untwisting are advanced opt-ins.
 - Temporal-axis Untwisting remains experimental and disabled by default.
