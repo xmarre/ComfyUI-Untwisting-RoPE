@@ -28,7 +28,7 @@ _KEYLESS_QV_ROWS = 2 * _KEYLESS_INNER_DIM
 _KEYLESS_ROPE_POLICY = "h3_split_half_96_v1"
 _KEYLESS_QV_ORDER = "q_effective;v"
 _KEYLESS_NORM_EPS = 1e-5
-_KEYLESS_ROUTE_PREPROCESSOR_VERSION = 1
+_KEYLESS_ROUTE_PREPROCESSOR_VERSION = 2
 _REFERENCE_SCOPES = frozenset(
     {"image_only", "image_and_video", "all_visual_including_continuum"}
 )
@@ -262,7 +262,7 @@ class _KeylessUntwistSnapshot:
 
     def identity_payload(self) -> dict[str, Any]:
         return {
-            "schema": "minimax_h3_untwist_keyless_routing_preprocessor_v1",
+            "schema": "minimax_h3_untwist_keyless_routing_preprocessor_v2",
             "version": _KEYLESS_ROUTE_PREPROCESSOR_VERSION,
             "instance_id": self.instance_id,
             "expected_rows": self.expected_rows,
@@ -290,25 +290,95 @@ def _snapshot_identity(snapshot: _KeylessUntwistSnapshot) -> str:
         allow_nan=False,
     ).encode("utf-8")
     digest = hashlib.sha256(encoded).hexdigest()
-    return f"minimax_h3_untwist_keyless_route_v1:{digest}"
+    return f"minimax_h3_untwist_keyless_route_v2:{digest}"
+
+
+def _domain_positions(
+    domain: Any,
+    *,
+    local_rows: int,
+    expected_rows: int,
+    label: str,
+) -> tuple[int, ...]:
+    """Resolve local route rows to original packed-row coordinates."""
+
+    if domain is None:
+        if local_rows != expected_rows:
+            raise RuntimeError(
+                f"Keyless Untwist {label} domain is missing after row selection: "
+                f"local_rows={local_rows}, expected full rows={expected_rows}"
+            )
+        return tuple(range(expected_rows))
+
+    indices = getattr(domain, "indices", None)
+    start = getattr(domain, "start", None)
+    stop = getattr(domain, "stop", None)
+    if indices is not None:
+        try:
+            positions = tuple(int(value) for value in indices)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"Keyless Untwist {label} domain indices must be integers"
+            ) from exc
+        if len(positions) != local_rows:
+            raise RuntimeError(
+                f"Keyless Untwist {label} domain has {len(positions)} coordinates "
+                f"for {local_rows} local rows"
+            )
+    elif start is not None or stop is not None:
+        if type(start) is not int or type(stop) is not int:
+            raise RuntimeError(
+                f"Keyless Untwist {label} slice domain requires integer start/stop"
+            )
+        if stop < start or stop - start != local_rows:
+            raise RuntimeError(
+                f"Keyless Untwist {label} slice [{start},{stop}) does not match "
+                f"{local_rows} local rows"
+            )
+        positions = tuple(range(start, stop))
+    else:
+        raise RuntimeError(
+            f"Keyless Untwist {label} domain does not expose row coordinates"
+        )
+
+    if any(position < 0 or position >= expected_rows for position in positions):
+        raise RuntimeError(
+            f"Keyless Untwist {label} domain contains a row outside "
+            f"[0,{expected_rows})"
+        )
+    return positions
 
 
 def _apply_keyless_untwist_route(
     route: torch.Tensor,
     snapshot: _KeylessUntwistSnapshot,
+    *,
+    value_domain: Any = None,
+    routing_position_domain: Any = None,
 ) -> torch.Tensor:
-    """Scale the already normalized/positioned logical route, never retrieval V."""
+    """Scale normalized/positioned route rows by original routing coordinates."""
 
     if not torch.is_tensor(route) or route.ndim != 3:
         raise RuntimeError(
             "Keyless Untwist routing preprocessor requires route [rows,heads,head_dim]"
         )
-    if int(route.shape[0]) != snapshot.expected_rows:
-        raise RuntimeError(
-            "Keyless Untwist absolute reference ranges no longer match the current value domain; "
-            f"expected {snapshot.expected_rows} rows, got {int(route.shape[0])}. "
-            "Selected/reordered Keyless value domains require a domain-aware Untwist contract."
+    local_rows = int(route.shape[0])
+    positions = _domain_positions(
+        routing_position_domain,
+        local_rows=local_rows,
+        expected_rows=snapshot.expected_rows,
+        label="routing-position",
+    )
+    if value_domain is not None:
+        # Retrieval coordinates are not used for Untwist selection, but their
+        # topology must remain 1:1 with the route rows selected from V.
+        _domain_positions(
+            value_domain,
+            local_rows=local_rows,
+            expected_rows=snapshot.expected_rows,
+            label="value",
         )
+
     head_dim = int(route.shape[-1])
     rotated_dim = 2 * snapshot.rope_axis_count * snapshot.rope_freqs_per_axis
     if rotated_dim > head_dim:
@@ -340,9 +410,15 @@ def _apply_keyless_untwist_route(
         scale_temporal_axis=snapshot.scale_temporal_axis,
     ).view(1, 1, head_dim)
 
-    out = route.clone()
+    selected = torch.zeros(local_rows, dtype=torch.bool, device=route.device)
+    coordinate_tensor = torch.tensor(positions, dtype=torch.long, device=route.device)
     for start, end in snapshot.reference_ranges:
-        out[start:end, :, :] = out[start:end, :, :] * scale
+        selected |= (coordinate_tensor >= start) & (coordinate_tensor < end)
+    if not bool(selected.any()):
+        return route
+
+    out = route.clone()
+    out[selected, :, :] = out[selected, :, :] * scale
     return out
 
 
@@ -355,6 +431,19 @@ class KeylessUntwistRoutingPreprocessor:
 
     def fn(self, route: torch.Tensor) -> torch.Tensor:
         return _apply_keyless_untwist_route(route, self._snapshot)
+
+    def apply_domain(
+        self,
+        route: torch.Tensor,
+        value_domain: Any,
+        routing_position_domain: Any,
+    ) -> torch.Tensor:
+        return _apply_keyless_untwist_route(
+            route,
+            self._snapshot,
+            value_domain=value_domain,
+            routing_position_domain=routing_position_domain,
+        )
 
     __call__ = fn
 
@@ -379,24 +468,13 @@ def append_keyless_routing_preprocessor(
 ) -> dict[str, Any]:
     """Append Untwist to the public routing-only chain without stealing attention ownership.
 
-    The current Keyless preprocessor ABI receives only the materialized route tensor.
-    Absolute H3 reference ranges therefore cannot be remapped after an explicit value
-    or routing-position selection. Such domains fail closed instead of applying scales
-    to the wrong physical rows. A provider-created subdomain is additionally caught by
-    the preprocessor's exact full-row-count check at execution.
+    Domain-aware Keyless providers may select/reorder V before materializing route.
+    The preprocessor's apply_domain ABI maps those local rows through the authoritative
+    routing-position domain, so absolute H3 reference ranges keep their original packed
+    coordinates while retrieval V remains untouched.
     """
 
     out = dict(transformer_options)
-    explicit_domains = [
-        name
-        for name in (KEYLESS_VALUE_DOMAIN_KEY, KEYLESS_ROUTING_POSITION_DOMAIN_KEY)
-        if out.get(name) is not None
-    ]
-    if explicit_domains:
-        raise RuntimeError(
-            "Keyless Untwist routing-only preprocessing does not yet support explicit row domains: "
-            + ", ".join(explicit_domains)
-        )
 
     existing = out.get(KEYLESS_ROUTING_PREPROCESSORS_KEY, ())
     if existing is None:
